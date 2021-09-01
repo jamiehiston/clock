@@ -1,0 +1,429 @@
+#include <AT89c51XD2.H>	
+#include <stdio.h>
+//=========================================================================================================
+//=============================================== VARIABLES ===============================================
+//=========================================================================================================
+//--------------------------------
+//--------- MAIN CLOCK -----------
+//--------------------------------
+//initialising hours and minutes
+int mins = 0; //when program starts, start at midnight
+int hours = 0;
+int counter = 0; //initialising this for later when we use it as a sub-counter in our Timer0 interrupt to increment minutes
+int speed = 100; //sets the speed the minutes increment at - a higher number will make it go slower
+
+
+//---------------------------------
+//----------- ALARM ---------------
+//---------------------------------
+//initialising alarm hours/minutes
+int alarmMins = 0;
+int alarmHours = 0;
+sbit alarmBuzzer = P3^7; //defining pin for buzzer
+sbit alarmOn = P3^6; //defining pin for on/off switch
+
+
+//---------------------------------
+//---------- DISPLAY --------------
+//---------------------------------
+int display[4] = {0}; //used to loop through each digit and keep code efficient
+int displayA[4] = {0}; //same but for alarm
+sbit digit1 = P2^4; //set cathode for digit 1, hoursH
+sbit digit2 = P2^5; //set cathode for digit 2, hoursL
+sbit digit3 = P2^6; //set cathode for digit 3, minsH
+sbit digit4 = P2^7; //set cathode for digit 4, minsL
+//can we do sbit digit[5] = {P2^4, P2^5, P2^6, P2^7}; ?
+
+
+//---------------------------------
+//---------- BUTTONS --------------
+//---------------------------------
+sbit setTime = P3^2; //defining button for setting time, this needs to be on EX0 pin
+sbit setAlarm = P3^3; //defininig button for setting alarm, this needs to be on EX1 pin
+sbit setHours = P3^4; //defining button for setting hours
+sbit setMins = P3^5; //defining button for setting minutes
+int butcountmin = 0; //for button delay
+int butcounthour = 0; //for button delay, in case you press hours and minutes at the same time
+
+
+//---------------------------------
+//--------- 12 HOUR MODE ----------
+//---------------------------------
+sbit AMPMMode = P1^7; //define pin for switching am/pm mode on or off
+sbit PMLED = P1^6; //define pin for am/pm mode LED, will light up during the afternoon
+int AMPMEquiv = 0; //needed to convert 24 hour clock to 12 hour clock
+int AMPMAlarmEquiv = 0; //same but for the alarm
+
+
+//=========================================================================================================
+//=============================================== FUNCTIONS ===============================================
+//=========================================================================================================
+//---------------------------------------
+//--------- INCREMENT/SET TIME ----------
+//---------------------------------------
+void IncHours(void)
+{
+	if(hours < 23)
+	{
+		hours++;
+	}
+	else //when we get to 24 hours
+	{
+		hours = 0; //reset to 0
+	}
+}
+
+void IncMinutes(void)
+{
+	if(mins<59)
+	{
+		mins++;
+	}
+	else
+	{
+		mins = 0;
+		IncHours();
+	}
+}
+
+void CalculateAlarmAMPM()
+{
+	//choose between 24 or 12 hour mode
+	if(AMPMMode)
+	{
+		if(alarmHours < 12)
+		{
+			PMLED = 1;
+			if(alarmHours == 0)
+				AMPMAlarmEquiv = 12;
+			else
+				AMPMAlarmEquiv = alarmHours;
+		}
+		
+		if(alarmHours == 12)
+		{
+			PMLED = 0;
+			AMPMAlarmEquiv = alarmHours;
+		}
+		
+		if(alarmHours > 12)
+		{
+			AMPMAlarmEquiv = alarmHours - 12; //hours will keep counting till 23 but never show more than 12, for example 13:00 will show as 1:00
+			PMLED = 0; //PM light will be on during all PM hours
+		}
+	}
+	else
+	{
+		PMLED = 1; //set PM light off
+	}
+}
+
+void IncAlarmHours(void) //for setting alarm hours
+{
+	if(alarmHours < 23)
+	{
+		alarmHours++;
+	}
+	else //when we get to 24 hours
+	{
+		alarmHours = 0; //reset to 0
+	}
+	
+	//choose between 24 or 12 hour mode
+	if(AMPMMode)
+	{
+		if(alarmHours == 0) //if its midnight
+		{
+			AMPMAlarmEquiv = 12;
+			PMLED = 1; //turn PM light off
+		}
+		
+		if(alarmHours == 12) //if its noon, this is a special case where we don't need to calculate a new value for time, but the PM LED needs to be turned on
+		{
+			PMLED = 0; //turn PM light on
+		}
+		
+		if(alarmHours > 12)
+		{
+			AMPMAlarmEquiv = alarmHours - 12; //hours will keep counting till 23 but never show more than 12, for example 13:00 will show as 1:00
+			PMLED = 0; //PM light PM light will be on during all PM hours
+		}
+	}
+	CalculateAlarmAMPM();
+}
+
+void IncAlarmMinutes(void) //for setting alarm minutes
+{
+	if(alarmMins<59)
+	{
+		alarmMins++;
+	}
+	else
+	{
+		alarmMins = 0;
+		IncAlarmHours();
+	}
+}
+
+//---------------------------------------
+//------------ DISPLAY TIME -------------
+//---------------------------------------
+void DisplayClockTime(int curDig) //taking value from the loop, we can display the current digit, this means its run only once for 4 digits
+{
+		if(!AMPMMode) //if we are in 24 hour mode
+		{
+			display[0] = hours / 10; //this will give us the "tens" unit, i.e. the first number in the 2 digit number
+			display[1] = hours % 10; //the modulus gives us the remainder, so we get the "ones" unit i.e. the second number in the 2 digit number
+			display[2] = mins / 10; //same as hours, this will give us the first digit in the 2 digit number
+			display[3] = mins % 10; //same as hours, this will give us the second digit in the 2 digit number
+		}
+		else //if we are in am/pm mode
+		{
+			display[0] = AMPMEquiv / 10; //now using the 12 hour version we've calculated
+			display[1] = AMPMEquiv % 10;
+			display[2] = mins / 10; //minutes are unchanged even in 12 hour mode
+			display[3] = mins % 10;
+		}
+		
+		switch(display[curDig]) //choose number to show and write it to port
+		{
+			case 0: P2 = 0xF0; break; //F sets all 4 digit cathodes off, initially. we set the single pin we want to display to in the next step. remember 0 is ON and 1 is OFF, so "F" writes "1111" to the 4 cathode pins
+			case 1: P2 = 0xF1; break; //the number part of this hex value will write this same number in binary, i.e. "2" writes "0010" to the 4 pins that get sent to the decoder		
+			case 2: P2 = 0xF2; break;			
+			case 3: P2 = 0xF3; break;			
+			case 4: P2 = 0xF4; break;							
+			case 5: P2 = 0xF5; break;							
+			case 6: P2 = 0xF6; break;							
+			case 7: P2 = 0xF7; break;							
+			case 8: P2 = 0xF8; break;							
+			case 9: P2 = 0xF9; break;
+		}	
+		
+		switch(curDig) //choose digit to display it on - order is left to right
+		{
+			case 0: digit1 = 0; break; //hours H
+			case 1: digit2 = 0; break; //hours L
+			case 2: digit3 = 0; break; //mins H
+			case 3: digit4 = 0; break; //mins L
+		}
+}
+
+void DisplayAlarmTime(int curDig)
+{
+		if(AMPMMode)
+		{
+			displayA[0] = AMPMAlarmEquiv / 10;
+			displayA[1] = AMPMAlarmEquiv % 10;
+		}
+		else
+		{
+			displayA[0] = alarmHours / 10;
+			displayA[1] = alarmHours % 10;
+		}
+		displayA[2] = alarmMins / 10;
+		displayA[3] = alarmMins % 10;
+			
+		switch(displayA[curDig]) //choose number to show and write it to port
+		{
+			case 0: P2 = 0xF0; break; //F sets all 4 digit cathodes off
+			case 1: P2 = 0xF1; break;			
+			case 2: P2 = 0xF2; break;			
+			case 3: P2 = 0xF3; break;			
+			case 4: P2 = 0xF4; break;							
+			case 5: P2 = 0xF5; break;							
+			case 6: P2 = 0xF6; break;							
+			case 7: P2 = 0xF7; break;							
+			case 8: P2 = 0xF8; break;							
+			case 9: P2 = 0xF9; break;
+		}	
+		
+		switch(curDig) //choose digit to display it on - order is left to right
+		{
+			case 0: digit1 = 0; break; //hours H
+			case 1: digit2 = 0; break; //hours L
+			case 2: digit3 = 0; break; //mins H
+			case 3: digit4 = 0; break; //mins L
+		}
+}
+
+//---------------------------------------
+//-------------- COUNTER ----------------
+//---------------------------------------
+void CountSecond()
+{
+	if(counter<speed) //the timer interrupt loops every 4 milliseconds, and this counts every time it loops
+	{
+		counter++;
+	}
+	else //when we reach 200 loops, this will be 200 x 4ms = 0.8 seconds
+	{
+		IncMinutes(); //increment the minutes once every 0.8 seconds
+		counter = 0; //our increment of time has been reached, reset
+	}
+}
+
+void CalculateAMPM() //this is run when we want to calculate what the current time should be in 12 hour am/pm mode
+{
+	//choose between 24 or 12 hour mode
+	if(AMPMMode)
+	{
+		if(hours < 12)
+		{
+			PMLED = 1;
+			if(hours == 0)
+				AMPMEquiv = 12;
+			else
+				AMPMEquiv = hours;
+		}
+		
+		if(hours == 12)
+		{
+			PMLED = 0;
+			AMPMEquiv = hours;
+		}
+		
+		if(hours > 12)
+		{
+			AMPMEquiv = hours - 12; //hours will keep counting till 23 but never show more than 12, for example 13:00 will show as 1:00
+			PMLED = 0; //PM light will be on during all PM hours
+		}
+	}
+	else
+	{
+		PMLED = 1;
+	}
+}
+
+void Alarm()
+{
+	if((hours == alarmHours && mins == alarmMins) && (alarmOn)) //if the current time matches the defined alarm time, and the alarm is switched on
+	{
+		alarmBuzzer = 0; //set buzzer on, will stay on forever or until the switch is turned off
+	}
+	if(!alarmOn) //if switch is off
+	{
+		alarmBuzzer = 1; //set buzzer off
+	}	
+}
+
+//---------------------------------------
+//------------- INTERRUPTS --------------
+//---------------------------------------
+
+void T0_Timer0( ) interrupt 1 //needs lowest priority so the display can always be running properly
+{
+	int n = 0;
+	for(n=0; n<4; n++) //efficient way to loop through each digit for refresh, this will increment "n" from 0 to 3 and use the current value of n to a function which uses it to display the corresponding digit
+	{
+		DisplayClockTime(n); //send current loop number to the function, so we can determine which digit to display
+	}
+	
+	CountSecond(); //this function increments our clock minutes. in the function, theres a variable that we can change so that minutes increment every X times this timer0 loops, effectively creating a slower incrementation.
+	
+	Ala0rm(); //check if the alarm should be running
+	CalculateAMPM(); //we run this in timer0 so we can get real-time switching between am/pm and 24 hour mode
+	//count = 0; //this shouldn't be here....!! remove tomorrow
+}
+
+//EX0 is external interrupt 0, the button connected to pin 3^2 which controls when we want to set time
+void EX0_External0(void) interrupt 0 //this number at the end is the register we're keeping it in
+{
+	int n; //this is for the display refresh loop
+	for(n=0; n<4; n++) //this loops through the display one digit at a time to still display numbers even when we are interrupting
+	{
+		DisplayClockTime(n);
+	}	
+	
+	if(!setHours) //if "set hours" button is pressed while we're holding set time button. bear in mind it'll loop this stuff for as long as we are holding down the button
+	{
+		for(butcounthour=0; butcounthour<=20000; butcounthour++) //delay it for roughly a second, 20000 isn't a magical number, it just felt about right
+		{
+			if(butcounthour == 20000) //when it reaches this limit
+			{
+				IncHours(); //add one hour to alarm time
+				CalculateAMPM(); //just in case we're in am/pm mode, calculate that too
+			}
+		}
+	}
+
+	if(!setMins) //if "set minutes" button is pressed while we're holding set time button. bear in mind it'll loop this stuff for as long as we are holding down the button
+	{
+		for(butcountmin=0; butcountmin<=20000; butcountmin++) //delay it for roughly a second, 20000 isn't a magical number, it just felt about right
+		{
+			if(butcountmin == 20000) //when it reaches this limit
+			{
+				IncMinutes(); //add one minute to alarm time
+				CalculateAMPM(); //just in case we're in am/pm mode, calculate that too
+			}
+		}
+	}
+}
+
+//EX1 is external interrupt 1, the button connected to pin 3^3 which controls when we want to set alarm time
+void EX1_External1(void) interrupt 2 //this number at the end is the register
+{
+	int m; //this is for the display refresh loop
+	for(m=0; m<4; m++) //this loops through the display one digit at a time to still display numbers even when we are interrupting
+	{
+		DisplayAlarmTime(m);
+	}
+	
+	if(!setHours) //if "set hours" button is pressed while we're holding set alarm time button. bear in mind it'll loop this stuff for as long as we are holding down the button
+	{
+		for(butcounthour=0; butcounthour<=20000; butcounthour++) //delay it for roughly a second, 20000 isn't a magical number, it just felt about right
+		{
+			if(butcounthour == 20000) //when it reaches this limit
+			{
+				IncAlarmHours(); //add one hour to alarm time
+				CalculateAMPM(); //just in case we're in am/pm mode, calculate that too
+			}
+		}
+	}
+	if(!setMins) //if "set minutes" button is pressed while we're holding set alarm time button. bear in mind it'll loop this stuff for as long as we are holding down the button
+	{
+		for(butcountmin=0; butcountmin<=20000; butcountmin++) //delay it for roughly a second, 20000 isn't a magical number, it just felt about right
+		{
+			if(butcountmin == 20000) //when it reaches this limit
+			{
+				IncAlarmMinutes(); //add one minute to alarm time
+				CalculateAMPM(); //just in case we're in am/pm mode, calculate that too
+			}
+		}
+	}
+}
+
+
+//---------------------------------------
+//-------------- MAIN BODY --------------
+//---------------------------------------
+void main(void) //nothing should be running in here, apart from setting up the interrupts!
+{	
+	//--------- Interrupt set up ------------
+	TR0 = 1; //set timer0 running
+	TH0 = 227;
+	TL0 = 50; //Set the reload value
+	TMOD = 2; //timer 8 bit auto reload mode
+	
+
+	ET0 = 1; /* Enable Timer 0 interrupt */
+	EX0 = 1; // Enable External 0 P3^2
+	EX1 = 1; // Enable External 1 P3^3
+	EA = 1; // Enable all Interrupts
+	
+	IT0 = 0; //	Interrupt 0, set to 0 falling edge or 1 for low level triggered
+	IT1 = 0; // Interrupt 1, set to 0 falling edge or 1 for low level triggered
+
+	
+	//------- Interrupt priorities ----------	//set bits to 00 for highest priority, 11 for lowest
+	IPH1 = 0x04; //sets ex1 to priority level 2, hex value chooses this from the 8 bit register
+	IPL0 = 0x04;
+	
+	IPH0 = 0x01; //sets ex0 to priority level 1
+	IPL1 = 0x01; //hex values here choose EX0
+	
+	IPH1 = 0x02; //sets timer0 to lowest priority
+	IPL1 = 0x02;
+	
+	while(1); //get stuck here forever once we've set everything up - the interrupts will take care of the rest
+}
+
